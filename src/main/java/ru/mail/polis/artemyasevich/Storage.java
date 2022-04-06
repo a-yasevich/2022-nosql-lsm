@@ -3,12 +3,9 @@ package ru.mail.polis.artemyasevich;
 import ru.mail.polis.BaseEntry;
 import ru.mail.polis.Config;
 
-import java.io.BufferedOutputStream;
-import java.io.DataOutputStream;
-import java.io.File;
-import java.io.IOException;
-import java.io.UncheckedIOException;
+import java.io.*;
 import java.nio.CharBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
@@ -96,21 +93,21 @@ public class Storage {
 
     private void savaData(Iterator<BaseEntry<String>> dataIterator,
                           Path pathToData, Path pathToMeta) throws IOException {
-        try (DataOutputStream dataStream = new DataOutputStream(new BufferedOutputStream(
-                Files.newOutputStream(pathToData, writeOptions)));
+        try (FileChannel dataStream = FileChannel.open(pathToData, writeOptions);
              DataOutputStream metaStream = new DataOutputStream(new BufferedOutputStream(
                      Files.newOutputStream(pathToMeta, writeOptions)
              ))) {
             EntryReadWriter entryWriter = getEntryReadWriter();
             BaseEntry<String> entry = dataIterator.next();
+
             int entriesCount = 1;
             int currentRepeats = 1;
-            int currentBytes = entryWriter.writeEntryInStream(dataStream, entry);
+            int currentBytes = entryWriter.writeEntryInChannel(dataStream, entry);
 
             while (dataIterator.hasNext()) {
                 entry = dataIterator.next();
                 entriesCount++;
-                int bytesWritten = entryWriter.writeEntryInStream(dataStream, entry);
+                int bytesWritten = entryWriter.writeEntryInChannel(dataStream, entry);
                 if (bytesWritten == currentBytes) {
                     currentRepeats++;
                     continue;
