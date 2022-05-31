@@ -1,6 +1,8 @@
 # 2022-nosql-lsm
 Проект [курса](https://polis.vk.company/curriculum/program/discipline/1356/) "NoSQL" в [Образовательном центре VK в Политехе](https://polis.vk.company/).
 
+https://github.com/a-yasevich/2022-nosql-lsm/tree/main/src/main/java/ru/mail/polis/artemyasevich
+
 ## Этап 1. In-memory (deadline 2022-03-02 23:59:59 MSK)
 ### Fork
 [Форкните проект](https://help.github.com/articles/fork-a-repo/), склонируйте и добавьте `upstream`:
