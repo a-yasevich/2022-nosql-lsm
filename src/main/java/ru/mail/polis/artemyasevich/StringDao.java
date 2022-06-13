@@ -86,8 +86,8 @@ public class StringDao implements Dao<String, BaseEntry<String>> {
         upsertLock.readLock().lock();
         try {
             BaseEntry<String> previous = memoryState.memory.get(entry.key());
-            long previousSize = previous == null ? 0 : EntryReadWriter.sizeOfEntry(previous);
-            long entrySizeDelta = EntryReadWriter.sizeOfEntry(entry) - previousSize;
+            long previousSize = previous == null ? 0 : EntryIOManager.sizeOfEntry(previous);
+            long entrySizeDelta = EntryIOManager.sizeOfEntry(entry) - previousSize;
             long currentMemoryUsage = memoryState.memoryUsage.addAndGet(entrySizeDelta);
             if (currentMemoryUsage > config.flushThresholdBytes()) {
                 if (currentMemoryUsage > config.flushThresholdBytes() * 2) {

@@ -31,22 +31,23 @@ public class Storage {
     private static final String FILE_EXTENSION = ".txt";
     private static final int DEFAULT_BUFFER_SIZE = 1024;
     private static final OpenOption[] writeOptions = {StandardOpenOption.CREATE, StandardOpenOption.WRITE};
-    private final Map<Thread, EntryReadWriter> entryReadWriter = Collections.synchronizedMap(new WeakHashMap<>());
+
+    private final Map<Thread, EntryIOManager> IOManagers = Collections.synchronizedMap(new WeakHashMap<>());
     private final List<DaoFile> filesToRemove = new ArrayList<>();
     private final Deque<DaoFile> daoFiles = new ConcurrentLinkedDeque<>();
     private final Path pathToDirectory;
+    private final int initialBufferSize;
     private int daoFilesCount;
-    private int bufferSize;
 
     Storage(Config config) throws IOException {
         this.pathToDirectory = config.basePath();
         int maxEntrySize = initFiles();
-        this.bufferSize = maxEntrySize == 0 ? DEFAULT_BUFFER_SIZE : maxEntrySize;
+        this.initialBufferSize = maxEntrySize == 0 ? DEFAULT_BUFFER_SIZE : maxEntrySize;
     }
 
     BaseEntry<String> get(String key) throws IOException {
-        EntryReadWriter entryReader = getEntryReadWriter();
-        if (key.length() > entryReader.maxKeyLength()) {
+        EntryIOManager entryReader = getEntryIOManager();
+        if (key.length() > entryReader.maxPossibleKeyLength()) {
             return null;
         }
         for (DaoFile daoFile : daoFiles) {
@@ -86,7 +87,7 @@ public class Storage {
         Path compactedMeta = pathToMeta(daoFilesCount);
         daoFilesCount++;
         int sizeBefore = daoFiles.size();
-        savaData(iterate(null, null), compactedData, compactedMeta);
+        saveData(iterate(null, null), compactedData, compactedMeta);
         daoFiles.addFirst(new DaoFile(compactedData, compactedMeta, true));
         for (int i = 0; i < sizeBefore; i++) {
             DaoFile removed = daoFiles.removeLast();
@@ -99,11 +100,7 @@ public class Storage {
         Path pathToData = pathToData(daoFilesCount);
         Path pathToMeta = pathToMeta(daoFilesCount);
         daoFilesCount++;
-        int maxEntrySize = savaData(dataIterator, pathToData, pathToMeta);
-        if (maxEntrySize > bufferSize) {
-            entryReadWriter.forEach((key, value) -> value.increaseBufferSize(maxEntrySize));
-            bufferSize = maxEntrySize;
-        }
+        saveData(dataIterator, pathToData, pathToMeta);
         daoFiles.addFirst(new DaoFile(pathToData, pathToMeta, false));
     }
 
@@ -131,16 +128,14 @@ public class Storage {
         daoFiles.clear();
     }
 
-    private int savaData(Iterator<BaseEntry<String>> dataIterator,
+    private void saveData(Iterator<BaseEntry<String>> dataIterator,
                           Path pathToData, Path pathToMeta) throws IOException {
-        int maxEntrySize = 0;
         try (FileChannel dataStream = FileChannel.open(pathToData, writeOptions);
              DataOutputStream metaStream = new DataOutputStream(new BufferedOutputStream(
                      Files.newOutputStream(pathToMeta, writeOptions)
              ))) {
-            EntryReadWriter entryWriter = getEntryReadWriter();
+            EntryIOManager entryWriter = getEntryIOManager();
             BaseEntry<String> entry = dataIterator.next();
-
             int entriesCount = 1;
             int currentRepeats = 1;
             int currentBytes = entryWriter.writeEntry(dataStream, entry);
@@ -149,9 +144,6 @@ public class Storage {
                 entry = dataIterator.next();
                 entriesCount++;
                 int bytesWritten = entryWriter.writeEntry(dataStream, entry);
-                if (bytesWritten > maxEntrySize) {
-                    maxEntrySize = bytesWritten;
-                }
                 if (bytesWritten == currentBytes) {
                     currentRepeats++;
                     continue;
@@ -165,11 +157,10 @@ public class Storage {
             metaStream.writeInt(currentBytes);
             metaStream.writeInt(entriesCount);
         }
-        return maxEntrySize;
     }
 
-    private EntryReadWriter getEntryReadWriter() {
-        return entryReadWriter.computeIfAbsent(Thread.currentThread(), thread -> new EntryReadWriter(bufferSize));
+    private EntryIOManager getEntryIOManager() {
+        return IOManagers.computeIfAbsent(Thread.currentThread(), thread -> new EntryIOManager(initialBufferSize));
     }
 
     private int initFiles() throws IOException {
@@ -224,7 +215,7 @@ public class Storage {
     }
 
     private class FileIterator implements Iterator<BaseEntry<String>> {
-        private final EntryReadWriter entryReader;
+        private final EntryIOManager entryReader;
         private final DaoFile daoFile;
         private final String to;
         private int entryToRead;
@@ -233,7 +224,7 @@ public class Storage {
         public FileIterator(String from, String to, DaoFile daoFile) throws IOException {
             this.daoFile = daoFile;
             this.to = to;
-            this.entryReader = getEntryReadWriter();
+            this.entryReader = getEntryIOManager();
             this.entryToRead = from == null ? 0 : entryReader.getEntryIndex(from, daoFile);
             this.next = getNext();
         }

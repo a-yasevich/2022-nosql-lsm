@@ -10,15 +10,15 @@ import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CharsetEncoder;
 import java.nio.charset.StandardCharsets;
 
-public class EntryReadWriter {
+public class EntryIOManager {
     private static final int META_SIZE = Short.BYTES + Byte.BYTES;
-    private final ByteBuffer buffer;
-    private final CharBuffer keyToFindBuffer;
-    private final CharBuffer charBuffer;
     private final CharsetEncoder encoder;
     private final CharsetDecoder decoder;
+    private ByteBuffer buffer;
+    private CharBuffer keyToFindBuffer;
+    private CharBuffer charBuffer;
 
-    EntryReadWriter(int bufferSize) {
+    EntryIOManager(int bufferSize) {
         this.buffer = ByteBuffer.allocate(bufferSize);
         this.keyToFindBuffer = CharBuffer.allocate(bufferSize);
         this.charBuffer = CharBuffer.allocate(bufferSize);
@@ -30,17 +30,17 @@ public class EntryReadWriter {
     //|key|value|keySize|valuePresent or key|keySize|valueNotPresent if value == null
     int writeEntry(FileChannel channel, BaseEntry<String> entry) throws IOException {
         buffer.clear();
-        putStringInBufferToEncode(entry.key(), charBuffer);
+        boolean valuePresent = entry.value() != null;
+        increaseBuffersIfNeeded(entry.key().length() + (valuePresent ? entry.value().length() : 0));
+        putStringInBufferToEncode(entry.key());
         encoder.encode(charBuffer, buffer, true);
         int keySize = buffer.position();
-        byte valuePresent = 0;
-        if (entry.value() != null) {
-            putStringInBufferToEncode(entry.value(), charBuffer);
+        if (valuePresent) {
+            putStringInBufferToEncode(entry.value());
             encoder.encode(charBuffer, buffer, true);
-            valuePresent = 1;
         }
         buffer.putShort((short) keySize);
-        buffer.put(valuePresent);
+        buffer.put((byte) (valuePresent ? 1 : 0));
         buffer.flip();
         channel.write(buffer);
         return buffer.limit();
@@ -65,12 +65,9 @@ public class EntryReadWriter {
     }
 
     private void fillBufferWithEntry(DaoFile daoFile, int index) throws IOException {
-        FileChannel fileChannel = daoFile.getChannel();
-        int entrySize = daoFile.entrySize(index);
-        long offset = daoFile.getOffset(index);
         buffer.clear();
-        buffer.limit(entrySize);
-        fileChannel.read(buffer, offset);
+        buffer.limit(daoFile.entrySize(index));
+        daoFile.getChannel().read(buffer, daoFile.getOffset(index));
         buffer.flip();
     }
 
@@ -93,16 +90,31 @@ public class EntryReadWriter {
         keyToFindBuffer.flip();
     }
 
-    int maxKeyLength() {
-        return (buffer.capacity() / 2 - Short.BYTES / 2);
+    int maxPossibleKeyLength() {
+        return charBuffer.capacity();
     }
 
-    private void putStringInBufferToEncode(String string, CharBuffer charBuffer) {
+    private void putStringInBufferToEncode(String string) {
         charBuffer.clear();
         charBuffer.put(string);
         charBuffer.flip();
     }
 
+    private void increaseBuffersIfNeeded(int entryStringLength) {
+        int sizeAtWorst = entryStringLength * 3 + META_SIZE;
+        if (sizeAtWorst <= buffer.capacity()) {
+            return;
+        }
+        int newCapacity = (int) (sizeAtWorst * 1.5);
+        keyToFindBuffer = CharBuffer.allocate(newCapacity);
+        charBuffer = CharBuffer.allocate(newCapacity);
+        buffer = ByteBuffer.allocate(newCapacity);
+    }
+
+    static long sizeOfEntry(BaseEntry<String> entry) {
+        int valueSize = entry.value() == null ? 0 : entry.value().length();
+        return (entry.key().length() + valueSize) * 2L;
+    }
 
     int getEntryIndex(String key, DaoFile daoFile) throws IOException {
         fillKeyBuffer(key);
