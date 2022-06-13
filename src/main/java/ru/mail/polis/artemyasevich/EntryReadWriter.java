@@ -19,9 +19,9 @@ public class EntryReadWriter {
     private final CharsetDecoder decoder;
 
     EntryReadWriter(int bufferSize) {
-        this.buffer = ByteBuffer.allocate(1000000);
-        this.keyToFindBuffer = CharBuffer.allocate(1000000);
-        this.charBuffer = CharBuffer.allocate(1000000);
+        this.buffer = ByteBuffer.allocate(bufferSize);
+        this.keyToFindBuffer = CharBuffer.allocate(bufferSize);
+        this.charBuffer = CharBuffer.allocate(bufferSize);
         this.encoder = StandardCharsets.UTF_8.newEncoder();
         this.decoder = StandardCharsets.UTF_8.newDecoder();
     }
