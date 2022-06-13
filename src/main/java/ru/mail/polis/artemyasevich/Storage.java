@@ -3,13 +3,11 @@ package ru.mail.polis.artemyasevich;
 import ru.mail.polis.BaseEntry;
 import ru.mail.polis.Config;
 
-import java.io.*;
 import java.io.BufferedOutputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.CharBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -55,11 +53,11 @@ public class Storage {
         }
         for (int i = daoFiles.size() - 1; i >= 0; i--) {
             DaoFile daoFile = daoFiles.get(i);
-            int entryIndex = getEntryIndex(key, daoFile);
+            int entryIndex = entryReader.getEntryIndex(key, daoFile);
             if (entryIndex > daoFile.getLastIndex()) {
                 continue;
             }
-            BaseEntry<String> entry = entryReader.readEntryFromChannel(daoFile, entryIndex);
+            BaseEntry<String> entry = entryReader.readEntry(daoFile, entryIndex);
             if (entry.key().equals(key)) {
                 return entry.value() == null ? null : entry;
             }
@@ -111,12 +109,12 @@ public class Storage {
 
             int entriesCount = 1;
             int currentRepeats = 1;
-            int currentBytes = entryWriter.writeEntryInChannel(dataStream, entry);
+            int currentBytes = entryWriter.writeEntry(dataStream, entry);
 
             while (dataIterator.hasNext()) {
                 entry = dataIterator.next();
                 entriesCount++;
-                int bytesWritten = entryWriter.writeEntryInChannel(dataStream, entry);
+                int bytesWritten = entryWriter.writeEntry(dataStream, entry);
                 if (bytesWritten == currentBytes) {
                     currentRepeats++;
                     continue;
@@ -130,26 +128,6 @@ public class Storage {
             metaStream.writeInt(currentBytes);
             metaStream.writeInt(entriesCount);
         }
-    }
-
-    private int getEntryIndex(String key, DaoFile daoFile) throws IOException {
-        EntryReadWriter entryReader = getEntryReadWriter();
-        int left = 0;
-        int right = daoFile.getLastIndex();
-        while (left <= right) {
-            int middle = (right - left) / 2 + left;
-            CharBuffer middleKey = entryReader.bufferAsKeyOnly(daoFile, middle);
-            CharBuffer keyToFind = entryReader.fillAndGetKeyBuffer(key);
-            int comparison = keyToFind.compareTo(middleKey);
-            if (comparison < 0) {
-                right = middle - 1;
-            } else if (comparison > 0) {
-                left = middle + 1;
-            } else {
-                return middle;
-            }
-        }
-        return left;
     }
 
     private EntryReadWriter getEntryReadWriter() {
@@ -221,8 +199,8 @@ public class Storage {
         public FileIterator(String from, String to, DaoFile daoFile) throws IOException {
             this.daoFile = daoFile;
             this.to = to;
-            this.entryToRead = from == null ? 0 : getEntryIndex(from, daoFile);
             this.entryReader = getEntryReadWriter();
+            this.entryToRead = from == null ? 0 : entryReader.getEntryIndex(from, daoFile);
             this.next = getNext();
         }
 
@@ -246,7 +224,7 @@ public class Storage {
             if (daoFile.getOffset(entryToRead) == daoFile.sizeOfFile()) {
                 return null;
             }
-            BaseEntry<String> entry = entryReader.readEntryFromChannel(daoFile, entryToRead);
+            BaseEntry<String> entry = entryReader.readEntry(daoFile, entryToRead);
             if (to != null && entry.key().compareTo(to) >= 0) {
                 return null;
             }
