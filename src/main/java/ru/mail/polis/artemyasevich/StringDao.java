@@ -107,17 +107,16 @@ public class StringDao implements Dao<String, BaseEntry<String>> {
         if (state.storage == null) {
             return;
         }
+        if (state.storage.noNeedForCompact()) {
+            return;
+        }
         executor.submit(() -> {
-            State state = this.state;
             storageLock.lock();
             try {
-                if(state.storage.noNeedForCompact()){
-                    return;
-                }
                 Storage storage = state.storage.compact();
                 upsertLock.writeLock();
                 try {
-                    this.state = state.afterCompact(storage);
+                    state = state.afterCompact(storage); //state changes only under writeLock
                 } finally {
                     upsertLock.writeLock().unlock();
                 }
@@ -162,18 +161,17 @@ public class StringDao implements Dao<String, BaseEntry<String>> {
         try {
             upsertLock.writeLock().lock();
             try {
-                this.state = state.prepareForFlush();
+                state = state.prepareForFlush();
             } finally {
                 upsertLock.writeLock().unlock();
             }
-            if (this.state.flushing.isEmpty()) {
+            if (state.flushing.isEmpty()) {
                 return;
             }
-            System.out.println(state);
             Storage storage = state.storage.flush(this.state.flushing.values().iterator());
             upsertLock.writeLock().lock();
             try {
-                this.state = state.afterFlush(storage);
+                state = state.afterFlush(storage);
             } finally {
                 upsertLock.writeLock().unlock();
             }

@@ -31,14 +31,19 @@ public class Storage {
     private static final int DEFAULT_BUFFER_SIZE = 1024;
     private static final OpenOption[] writeOptions = {StandardOpenOption.CREATE, StandardOpenOption.WRITE};
 
-    private final Map<Thread, EntryIOManager> ioManager;
+    private final Map<Thread, EntryIOManager> ioManagers;
     private final Deque<StorageFile> storageFiles; //immutable
     private final Path pathToDirectory;
     private final int maxEntrySize;
 
-    private Storage(Deque<StorageFile> storageFiles, Map<Thread, EntryIOManager> ioManagers, Path pathToDirectory, int maxEntrySize) {
+    private Storage(
+            Deque<StorageFile> storageFiles,
+            Map<Thread, EntryIOManager> ioManagers,
+            Path pathToDirectory,
+            int maxEntrySize
+    ) {
         this.storageFiles = storageFiles;
-        this.ioManager = ioManagers;
+        this.ioManagers = ioManagers;
         this.pathToDirectory = pathToDirectory;
         this.maxEntrySize = maxEntrySize;
     }
@@ -47,15 +52,16 @@ public class Storage {
         Deque<StorageFile> storageFiles = new ArrayDeque<>();
         int maxEntrySize = initFiles(storageFiles, config.basePath());
         int buffersSize = Math.max(maxEntrySize, DEFAULT_BUFFER_SIZE);
-        return new Storage(storageFiles, Collections.synchronizedMap(new WeakHashMap<>()), config.basePath(), buffersSize);
+        Map<Thread, EntryIOManager> ioManagers = Collections.synchronizedMap(new WeakHashMap<>());
+        return new Storage(storageFiles, ioManagers, config.basePath(), buffersSize);
     }
 
     private Storage newState(Deque<StorageFile> files, StorageFile newFile) {
         files.addFirst(newFile);
-        int maxEntrySize = this.maxEntrySize;
         Map<Thread, EntryIOManager> ioManagers;
-        if (newFile.maxEntrySize() <= this.maxEntrySize) {
-            ioManagers = this.ioManager;
+        int maxEntrySize = this.maxEntrySize;
+        if (newFile.maxEntrySize() <= maxEntrySize) {
+            ioManagers = this.ioManagers;
         } else {
             ioManagers = Collections.synchronizedMap(new WeakHashMap<>());
             maxEntrySize = newFile.maxEntrySize();
@@ -77,9 +83,6 @@ public class Storage {
             if (entry.key().equals(key)) {
                 return entry.value() == null ? null : entry;
             }
-            if (storageFile.isCompacted()) {
-                break;
-            }
         }
         return null;
     }
@@ -90,18 +93,25 @@ public class Storage {
         for (StorageFile storageFile : storageFiles) {
             peekIterators.add(new PeekIterator(new FileIterator(from, to, storageFile, getEntryIOManager()), i));
             i++;
-            if (storageFile.isCompacted()) {
-                break;
-            }
         }
         return new MergeIterator(peekIterators);
     }
 
-    boolean noNeedForCompact(){
+    boolean noNeedForCompact() {
         return storageFiles.size() <= 1 || storageFiles.peek().isCompacted();
     }
+
+    long sizeOfEntry(BaseEntry<String> entry) {
+        return getEntryIOManager().sizeOfEntry(entry);
+    }
+
     Storage compact() throws IOException {
         StorageFile compactedFile = saveFile(iterate(null, null), true);
+        for (StorageFile storageFile : storageFiles) {
+            Files.delete(storageFile.pathToFile());
+            Files.delete(storageFile.pathToMeta());
+            storageFile.close();
+        }
         return newState(new ArrayDeque<>(), compactedFile);
     }
 
@@ -111,16 +121,8 @@ public class Storage {
     }
 
     void close() throws IOException {
-        boolean compactedEncountered = false;
         for (StorageFile storageFile : storageFiles) {
             storageFile.close();
-            if (compactedEncountered) {
-                Files.delete(storageFile.pathToFile());
-                Files.delete(storageFile.pathToMeta());
-            }
-            if (storageFile.isCompacted()) {
-                compactedEncountered = true;
-            }
         }
         storageFiles.clear();
     }
@@ -168,7 +170,7 @@ public class Storage {
     }
 
     private EntryIOManager getEntryIOManager() {
-        return ioManager.computeIfAbsent(Thread.currentThread(), thread -> new EntryIOManager(maxEntrySize));
+        return ioManagers.computeIfAbsent(Thread.currentThread(), thread -> new EntryIOManager(maxEntrySize));
     }
 
     private static int initFiles(Deque<StorageFile> storageFiles, Path pathToDirectory) throws IOException {
@@ -217,10 +219,6 @@ public class Storage {
 
     private Path pathToFile(String fileName) {
         return pathToDirectory.resolve(fileName + FILE_EXTENSION);
-    }
-
-    long sizeOfEntry(BaseEntry<String> entry) {
-        return getEntryIOManager().sizeOfEntry(entry);
     }
 
 }
