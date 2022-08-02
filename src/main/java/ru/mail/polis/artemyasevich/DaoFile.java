@@ -1,5 +1,6 @@
 package ru.mail.polis.artemyasevich;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.channels.FileChannel;
@@ -13,17 +14,25 @@ public class DaoFile {
     private final boolean isCompacted;
     private final Path pathToFile;
     private final Path pathToMeta;
-    private int maxEntrySize;
+    private final int maxEntrySize;
 
-    public DaoFile(Path pathToFile, Path pathToMeta, boolean isCompacted) throws IOException {
+    private DaoFile(Path pathToFile, Path pathToMeta, Meta meta, boolean isCompacted)
+            throws FileNotFoundException {
         this.pathToFile = pathToFile;
-        this.pathToMeta = pathToMeta;
-        this.reader = new RandomAccessFile(pathToFile.toFile(), "r");
-        this.offsets = processMetaAndGetOffsets(pathToMeta);
-        this.size = offsets[offsets.length - 1];
-        this.entries = offsets.length - 1;
+        this.offsets = meta.offsets;
+        this.size = meta.fileSize();
+        this.maxEntrySize = meta.maxEntrySize;
+        this.entries = meta.entriesCount();
         this.isCompacted = isCompacted;
+        this.reader = new RandomAccessFile(pathToFile.toFile(), "r");
+        this.pathToMeta = pathToMeta;
     }
+
+    public static DaoFile loadFile(Path pathToFile, Path pathToMeta, boolean isCompacted) throws IOException {
+        Meta meta = processMetafile(pathToMeta);
+        return new DaoFile(pathToFile, pathToMeta, meta, isCompacted);
+    }
+
 
     public boolean isCompacted() {
         return isCompacted;
@@ -58,8 +67,9 @@ public class DaoFile {
         return entries - 1;
     }
 
-    private long[] processMetaAndGetOffsets(Path pathToMeta) throws IOException {
+    private static Meta processMetafile(Path pathToMeta) throws IOException {
         long[] fileOffsets;
+        int maxEntry;
         try (RandomAccessFile metaReader = new RandomAccessFile(pathToMeta.toFile(), "r")) {
             long metaFileSize = metaReader.length();
             metaReader.seek(metaFileSize - Integer.BYTES);
@@ -68,7 +78,7 @@ public class DaoFile {
             fileOffsets[0] = 0;
             metaReader.seek(0);
             int i = 1;
-            int maxEntry = 0;
+            maxEntry = 0;
             long currentOffset = 0;
             while (metaReader.getFilePointer() != metaFileSize - Integer.BYTES) {
                 int numberOfEntries = metaReader.readInt();
@@ -82,9 +92,8 @@ public class DaoFile {
                     i++;
                 }
             }
-            this.maxEntrySize = maxEntry;
         }
-        return fileOffsets;
+        return new Meta(fileOffsets, maxEntry);
     }
 
     public Path pathToFile() {
@@ -93,6 +102,16 @@ public class DaoFile {
 
     public Path pathToMeta() {
         return pathToMeta;
+    }
+
+    private record Meta(long[] offsets, int maxEntrySize) {
+        public long fileSize() {
+            return offsets[offsets.length - 1];
+        }
+
+        public int entriesCount() {
+            return offsets.length - 1;
+        }
     }
 
 }

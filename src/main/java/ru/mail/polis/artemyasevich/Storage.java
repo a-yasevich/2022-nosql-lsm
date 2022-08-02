@@ -88,7 +88,7 @@ public class Storage {
         daoFilesCount++;
         int sizeBefore = daoFiles.size();
         saveData(iterate(null, null), compactedData, compactedMeta);
-        daoFiles.addFirst(new DaoFile(compactedData, compactedMeta, true));
+        daoFiles.addFirst(DaoFile.loadFile(compactedData, compactedMeta, true));
         for (int i = 0; i < sizeBefore; i++) {
             DaoFile removed = daoFiles.removeLast();
             filesToRemove.add(removed);
@@ -101,7 +101,7 @@ public class Storage {
         Path pathToMeta = pathToMeta(daoFilesCount);
         daoFilesCount++;
         saveData(dataIterator, pathToData, pathToMeta);
-        daoFiles.addFirst(new DaoFile(pathToData, pathToMeta, false));
+        daoFiles.addFirst(DaoFile.loadFile(pathToData, pathToMeta, false));
     }
 
     void close() throws IOException {
@@ -185,7 +185,7 @@ public class Storage {
             Files.delete(metaFiles.poll());
         }
         while (!dataFiles.isEmpty() && !metaFiles.isEmpty()) {
-            DaoFile daoFile = new DaoFile(dataFiles.poll(), metaFiles.poll(), false);
+            DaoFile daoFile = DaoFile.loadFile(dataFiles.poll(), metaFiles.poll(), false);
             if (daoFile.maxEntrySize() > maxSize) {
                 maxSize = daoFile.maxEntrySize();
             }
