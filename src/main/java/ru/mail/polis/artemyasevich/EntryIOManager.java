@@ -29,6 +29,48 @@ public class EntryIOManager {
     //valueSize is redundant, the valuePresent marker is sufficient
     //|key|value|keySize|valuePresent or key|keySize|valueNotPresent if value == null
     int writeEntry(FileChannel channel, BaseEntry<String> entry) throws IOException {
+        int bytesToWrite = putEntryInBuffer(entry);
+        channel.write(buffer);
+        return bytesToWrite;
+    }
+
+    BaseEntry<String> readEntry(DaoFile daoFile, int index) throws IOException {
+        fillBufferWithEntry(daoFile, index);
+        int keySize = seekBufferToMetaAndGetKeySize();
+        boolean valuePresent = buffer.get() != 0;
+        String key = getStringFromChBuffer(0, keySize);
+        if (!valuePresent) {
+            return new BaseEntry<>(key, null);
+        }
+        String value = getStringFromChBuffer(keySize, daoFile.entrySize(index) - META_SIZE);
+        return new BaseEntry<>(key, value);
+    }
+
+    long sizeOfEntry(BaseEntry<String> entry) {
+        return putEntryInBuffer(entry);
+    }
+
+    int getEntryIndex(String key, DaoFile daoFile) throws IOException {
+        fillKeyBuffer(key);
+        int left = 0;
+        int right = daoFile.getLastIndex();
+        while (left <= right) {
+            int middle = (right - left) / 2 + left;
+            fillBufferWithEntry(daoFile, middle);
+            fillCharBuffer(0, seekBufferToMetaAndGetKeySize());
+            int comparison = keyToFindBuffer.compareTo(charBuffer);
+            if (comparison < 0) {
+                right = middle - 1;
+            } else if (comparison > 0) {
+                left = middle + 1;
+            } else {
+                return middle;
+            }
+        }
+        return left;
+    }
+
+    private int putEntryInBuffer(BaseEntry<String> entry) {
         buffer.clear();
         boolean valuePresent = entry.value() != null;
         increaseBuffersIfNeeded(entry.key().length() + (valuePresent ? entry.value().length() : 0));
@@ -42,21 +84,13 @@ public class EntryIOManager {
         buffer.putShort((short) keySize);
         buffer.put((byte) (valuePresent ? 1 : 0));
         buffer.flip();
-        channel.write(buffer);
         return buffer.limit();
     }
 
-
-    BaseEntry<String> readEntry(DaoFile daoFile, int index) throws IOException {
-        fillBufferWithEntry(daoFile, index);
-        int keySize = seekBufferToMetaAndGetKeySize();
-        boolean valuePresent = buffer.get() != 0;
-        String key = getString(0, keySize);
-        if (!valuePresent) {
-            return new BaseEntry<>(key, null);
-        }
-        String value = getString(keySize, daoFile.entrySize(index) - META_SIZE);
-        return new BaseEntry<>(key, value);
+    private void putStringInBufferToEncode(String string) {
+        charBuffer.clear();
+        charBuffer.put(string);
+        charBuffer.flip();
     }
 
     private int seekBufferToMetaAndGetKeySize() {
@@ -71,7 +105,7 @@ public class EntryIOManager {
         buffer.flip();
     }
 
-    private String getString(int from, int toExclusive) {
+    private String getStringFromChBuffer(int from, int toExclusive) {
         fillCharBuffer(from, toExclusive);
         return charBuffer.toString();
     }
@@ -94,12 +128,6 @@ public class EntryIOManager {
         return charBuffer.capacity();
     }
 
-    private void putStringInBufferToEncode(String string) {
-        charBuffer.clear();
-        charBuffer.put(string);
-        charBuffer.flip();
-    }
-
     private void increaseBuffersIfNeeded(int entryStringLength) {
         int sizeAtWorst = entryStringLength * 3 + META_SIZE;
         if (sizeAtWorst <= buffer.capacity()) {
@@ -109,31 +137,6 @@ public class EntryIOManager {
         keyToFindBuffer = CharBuffer.allocate(newCapacity);
         charBuffer = CharBuffer.allocate(newCapacity);
         buffer = ByteBuffer.allocate(newCapacity);
-    }
-
-    static long sizeOfEntry(BaseEntry<String> entry) {
-        int valueSize = entry.value() == null ? 0 : entry.value().length();
-        return (entry.key().length() + valueSize) * 2L;
-    }
-
-    int getEntryIndex(String key, DaoFile daoFile) throws IOException {
-        fillKeyBuffer(key);
-        int left = 0;
-        int right = daoFile.getLastIndex();
-        while (left <= right) {
-            int middle = (right - left) / 2 + left;
-            fillBufferWithEntry(daoFile, middle);
-            fillCharBuffer(0, seekBufferToMetaAndGetKeySize());
-            int comparison = keyToFindBuffer.compareTo(charBuffer);
-            if (comparison < 0) {
-                right = middle - 1;
-            } else if (comparison > 0) {
-                left = middle + 1;
-            } else {
-                return middle;
-            }
-        }
-        return left;
     }
 
 }

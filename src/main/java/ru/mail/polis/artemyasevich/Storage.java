@@ -214,6 +214,10 @@ public class Storage {
         return pathToDirectory.resolve(fileName + FILE_EXTENSION);
     }
 
+    long sizeOfEntry(BaseEntry<String> entry) {
+        return getEntryIOManager().sizeOfEntry(entry);
+    }
+
     private class FileIterator implements Iterator<BaseEntry<String>> {
         private final EntryIOManager entryReader;
         private final DaoFile daoFile;
