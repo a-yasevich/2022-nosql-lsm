@@ -11,54 +11,49 @@ import java.nio.charset.CharsetEncoder;
 import java.nio.charset.StandardCharsets;
 
 public class EntryIOManager {
-    private static final int META_SIZE = Short.BYTES + Byte.BYTES;
     private final CharsetEncoder encoder;
     private final CharsetDecoder decoder;
     private ByteBuffer buffer;
-    private CharBuffer keyToFindBuffer;
+    private CharBuffer searchedKeyBuffer;
     private CharBuffer charBuffer;
+    private final EntryMeta entryMeta = new EntryMeta();
 
     EntryIOManager(int bufferSize) {
         this.buffer = ByteBuffer.allocate(bufferSize);
-        this.keyToFindBuffer = CharBuffer.allocate(bufferSize);
+        this.searchedKeyBuffer = CharBuffer.allocate(bufferSize);
         this.charBuffer = CharBuffer.allocate(bufferSize);
         this.encoder = StandardCharsets.UTF_8.newEncoder();
         this.decoder = StandardCharsets.UTF_8.newDecoder();
     }
 
-    //valueSize is redundant, the valuePresent marker is sufficient
-    //|key|value|keySize|valuePresent or key|keySize|valueNotPresent if value == null
+    //[key|value|keySize|valuePresent] or [key|keySize|valueNotPresent] if value == null
     int writeEntry(FileChannel channel, BaseEntry<String> entry) throws IOException {
-        int bytesToWrite = putEntryInBuffer(entry);
+        int bytesToWrite = writeEntryInBuffer(entry);
         channel.write(buffer);
         return bytesToWrite;
     }
 
     BaseEntry<String> readEntry(DaoFile daoFile, int index) throws IOException {
-        fillBufferWithEntry(daoFile, index);
-        int keySize = seekBufferToMetaAndGetKeySize();
-        boolean valuePresent = buffer.get() != 0;
-        String key = getStringFromChBuffer(0, keySize);
-        if (!valuePresent) {
-            return new BaseEntry<>(key, null);
-        }
-        String value = getStringFromChBuffer(keySize, daoFile.entrySize(index) - META_SIZE);
+        readEntryInBuffer(daoFile, index, buffer);
+        EntryMeta meta = entryMetaFromBuffer(buffer);
+        String key = decodeKey(buffer, charBuffer, meta.keySize);
+        String value = decodeValue(buffer, charBuffer, entryMeta, daoFile.entrySize(index));
         return new BaseEntry<>(key, value);
     }
 
     long sizeOfEntry(BaseEntry<String> entry) {
-        return putEntryInBuffer(entry);
+        return writeEntryInBuffer(entry);
     }
 
     int getEntryIndex(String key, DaoFile daoFile) throws IOException {
-        fillKeyBuffer(key);
+        putStringInChBuffer(searchedKeyBuffer, key);
         int left = 0;
         int right = daoFile.getLastIndex();
         while (left <= right) {
             int middle = (right - left) / 2 + left;
-            fillBufferWithEntry(daoFile, middle);
-            fillCharBuffer(0, seekBufferToMetaAndGetKeySize());
-            int comparison = keyToFindBuffer.compareTo(charBuffer);
+            readEntryInBuffer(daoFile, middle, buffer);
+            decodeKeyOnly(buffer, charBuffer);
+            int comparison = searchedKeyBuffer.compareTo(charBuffer);
             if (comparison < 0) {
                 right = middle - 1;
             } else if (comparison > 0) {
@@ -70,16 +65,14 @@ public class EntryIOManager {
         return left;
     }
 
-    private int putEntryInBuffer(BaseEntry<String> entry) {
+    private int writeEntryInBuffer(BaseEntry<String> entry) {
         buffer.clear();
         boolean valuePresent = entry.value() != null;
         increaseBuffersIfNeeded(entry.key().length() + (valuePresent ? entry.value().length() : 0));
-        putStringInBufferToEncode(entry.key());
-        encoder.encode(charBuffer, buffer, true);
+        encode(entry.key(), charBuffer, buffer);
         int keySize = buffer.position();
         if (valuePresent) {
-            putStringInBufferToEncode(entry.value());
-            encoder.encode(charBuffer, buffer, true);
+            encode(entry.value(), charBuffer, buffer);
         }
         buffer.putShort((short) keySize);
         buffer.put((byte) (valuePresent ? 1 : 0));
@@ -87,56 +80,75 @@ public class EntryIOManager {
         return buffer.limit();
     }
 
-    private void putStringInBufferToEncode(String string) {
-        charBuffer.clear();
-        charBuffer.put(string);
-        charBuffer.flip();
+    private void increaseBuffersIfNeeded(int entryStringLength) {
+        int sizeAtWorst = entryStringLength * 3 + EntryMeta.META_SIZE;
+        if (sizeAtWorst > buffer.capacity()) {
+            int newCapacity = (int) (sizeAtWorst * 1.5);
+            searchedKeyBuffer = CharBuffer.allocate(newCapacity);
+            charBuffer = CharBuffer.allocate(newCapacity);
+            buffer = ByteBuffer.allocate(newCapacity);
+        }
     }
 
-    private int seekBufferToMetaAndGetKeySize() {
-        buffer.position(buffer.limit() - META_SIZE);
-        return buffer.getShort();
+    private void encode(String string, CharBuffer encodeFrom, ByteBuffer storeWhere) {
+        putStringInChBuffer(encodeFrom, string);
+        encoder.encode(encodeFrom, storeWhere, true);
     }
 
-    private void fillBufferWithEntry(DaoFile daoFile, int index) throws IOException {
+    private EntryMeta entryMetaFromBuffer(ByteBuffer buffer) {
+        buffer.position(buffer.limit() - EntryMeta.META_SIZE);
+        entryMeta.keySize = buffer.getShort();
+        entryMeta.valuePresent = buffer.get() != 0;
+        return entryMeta;
+    }
+
+    private void readEntryInBuffer(DaoFile daoFile, int index, ByteBuffer buffer) throws IOException {
         buffer.clear();
         buffer.limit(daoFile.entrySize(index));
         daoFile.getChannel().read(buffer, daoFile.getOffset(index));
         buffer.flip();
     }
 
-    private String getStringFromChBuffer(int from, int toExclusive) {
-        fillCharBuffer(from, toExclusive);
-        return charBuffer.toString();
+    private String decodeKey(ByteBuffer decodeFrom, CharBuffer storeWhere, int keyLength){
+        decode(decodeFrom, storeWhere,0, keyLength);
+        return storeWhere.toString();
+    }
+    private String decodeValue(ByteBuffer decodeFrom, CharBuffer storeWhere, EntryMeta meta, int entrySize){
+        if (!meta.valuePresent) {
+            return null;
+        }
+        decode(decodeFrom, storeWhere, meta.keySize, entrySize - EntryMeta.META_SIZE);
+        return storeWhere.toString();
     }
 
-    private void fillCharBuffer(int from, int toExclusive) {
-        buffer.limit(toExclusive);
-        buffer.position(from);
+    private void decodeKeyOnly(ByteBuffer decodeFrom, CharBuffer storeWhere){
+        EntryMeta meta = entryMetaFromBuffer(decodeFrom);
+        decode(decodeFrom, storeWhere, 0, meta.keySize);
+    }
+
+    private void decode(ByteBuffer decodeFrom, CharBuffer storeWhere, int from, int toExclusive) {
+        decodeFrom.limit(toExclusive);
+        decodeFrom.position(from);
+        storeWhere.clear();
+        decoder.decode(decodeFrom, storeWhere, true);
+        storeWhere.flip();
+    }
+
+    private void putStringInChBuffer(CharBuffer charBuffer, String string) {
         charBuffer.clear();
-        decoder.decode(buffer, charBuffer, true);
+        charBuffer.put(string);
         charBuffer.flip();
-    }
-
-    private void fillKeyBuffer(String key) {
-        keyToFindBuffer.clear();
-        keyToFindBuffer.put(key);
-        keyToFindBuffer.flip();
     }
 
     int maxPossibleKeyLength() {
         return charBuffer.capacity();
     }
 
-    private void increaseBuffersIfNeeded(int entryStringLength) {
-        int sizeAtWorst = entryStringLength * 3 + META_SIZE;
-        if (sizeAtWorst <= buffer.capacity()) {
-            return;
-        }
-        int newCapacity = (int) (sizeAtWorst * 1.5);
-        keyToFindBuffer = CharBuffer.allocate(newCapacity);
-        charBuffer = CharBuffer.allocate(newCapacity);
-        buffer = ByteBuffer.allocate(newCapacity);
+    private static class EntryMeta{
+        public static final int META_SIZE = Short.BYTES + Byte.BYTES;
+
+        public int keySize;
+        public boolean valuePresent;
     }
 
 }
