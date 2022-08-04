@@ -35,7 +35,7 @@ public class StringDao implements Dao<String, BaseEntry<String>> {
 
     public StringDao(Config config) throws IOException {
         this.config = config;
-        this.storage = new Storage(config);
+        this.storage = Storage.load(config);
     }
 
     public StringDao() {

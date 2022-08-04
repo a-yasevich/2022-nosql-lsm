@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -23,7 +24,6 @@ import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Queue;
 import java.util.WeakHashMap;
-import java.util.concurrent.ConcurrentLinkedDeque;
 
 public class Storage {
     private static final String DATA_FILE = "data";
@@ -33,16 +33,23 @@ public class Storage {
     private static final OpenOption[] writeOptions = {StandardOpenOption.CREATE, StandardOpenOption.WRITE};
 
     private final Map<Thread, EntryIOManager> IOManagers = Collections.synchronizedMap(new WeakHashMap<>());
-    private final List<DaoFile> filesToRemove = new ArrayList<>();
-    private final Deque<DaoFile> daoFiles = new ConcurrentLinkedDeque<>();
+    private final Deque<DaoFile> daoFiles;
     private final Path pathToDirectory;
     private final int initialBufferSize;
-    private int daoFilesCount;
+    private final int fileNumberingStart;
 
-    Storage(Config config) throws IOException {
-        this.pathToDirectory = config.basePath();
-        int maxEntrySize = initFiles();
-        this.initialBufferSize = maxEntrySize == 0 ? DEFAULT_BUFFER_SIZE : maxEntrySize;
+    private Storage(Deque<DaoFile> daoFiles, Path pathToDirectory, int initialBufferSize, int fileNumberingStart) {
+        this.daoFiles = daoFiles;
+        this.pathToDirectory = pathToDirectory;
+        this.initialBufferSize = initialBufferSize;
+        this.fileNumberingStart = fileNumberingStart;
+    }
+
+    static Storage load(Config config) throws IOException {
+        Deque<DaoFile> daoFiles = new ArrayDeque<>();
+        StorageMeta meta = initFiles(daoFiles, config.basePath());
+        int buffersSize = Math.max(meta.maxEntrySize, DEFAULT_BUFFER_SIZE);
+        return new Storage(daoFiles, config.basePath(), buffersSize, meta.fileNumberingStart);
     }
 
     BaseEntry<String> get(String key) throws IOException {
@@ -83,49 +90,37 @@ public class Storage {
         if (daoFiles.size() <= 1 || daoFiles.peek().isCompacted()) {
             return;
         }
-        Path compactedData = pathToData(daoFilesCount);
-        Path compactedMeta = pathToMeta(daoFilesCount);
-        daoFilesCount++;
-        int sizeBefore = daoFiles.size();
-        saveData(iterate(null, null), compactedData, compactedMeta);
-        daoFiles.addFirst(DaoFile.loadFile(compactedData, compactedMeta, true));
-        for (int i = 0; i < sizeBefore; i++) {
-            DaoFile removed = daoFiles.removeLast();
-            filesToRemove.add(removed);
-        }
-        //Теперь все новые запросы get будут идти на новый компакт файл, старые продолжают работу
+        saveFile(iterate(null, null), true);
     }
 
     void flush(Iterator<BaseEntry<String>> dataIterator) throws IOException {
-        Path pathToData = pathToData(daoFilesCount);
-        Path pathToMeta = pathToMeta(daoFilesCount);
-        daoFilesCount++;
-        saveData(dataIterator, pathToData, pathToMeta);
-        daoFiles.addFirst(DaoFile.loadFile(pathToData, pathToMeta, false));
+        saveFile(dataIterator, false);
     }
 
     void close() throws IOException {
-        for (DaoFile fileToRemove : filesToRemove) {
-            fileToRemove.close();
-            Files.delete(fileToRemove.pathToMeta());
-            Files.delete(fileToRemove.pathToFile());
-        }
-        boolean compactedPresent = false;
-        Iterator<DaoFile> allFiles = daoFiles.iterator();
-        while (allFiles.hasNext()) {
-            DaoFile daoFile = allFiles.next();
+        boolean compactedEncountered = false;
+        for (DaoFile daoFile : daoFiles) {
             daoFile.close();
-            if (compactedPresent) {
+            if (compactedEncountered) {
                 Files.delete(daoFile.pathToFile());
                 Files.delete(daoFile.pathToMeta());
-                allFiles.remove();
             }
             if (daoFile.isCompacted()) {
-                compactedPresent = true;
+                compactedEncountered = true;
             }
         }
-        filesToRemove.clear();
         daoFiles.clear();
+    }
+
+    private int newFileNumber(){
+        return fileNumberingStart + daoFiles.size();
+    }
+
+    private void saveFile(Iterator<BaseEntry<String>> iterator, boolean fileIsCompacted) throws IOException {
+        Path pathToData = pathToData(newFileNumber());
+        Path pathToMeta = pathToMeta(newFileNumber());
+        saveData(iterator, pathToData, pathToMeta);
+        daoFiles.addFirst(DaoFile.loadFile(pathToData, pathToMeta, fileIsCompacted));
     }
 
     private void saveData(Iterator<BaseEntry<String>> dataIterator,
@@ -163,9 +158,9 @@ public class Storage {
         return IOManagers.computeIfAbsent(Thread.currentThread(), thread -> new EntryIOManager(initialBufferSize));
     }
 
-    private int initFiles() throws IOException {
-        int maxSize = 0;
-        Comparator<Path> comparator = Comparator.comparingInt(this::extractFileNumber);
+    private static StorageMeta initFiles(Deque<DaoFile> daoFiles, Path pathToDirectory) throws IOException {
+        int maxEntrySize = 0;
+        Comparator<Path> comparator = Comparator.comparingInt(Storage::extractFileNumber);
         Queue<Path> dataFiles = new PriorityQueue<>(comparator);
         Queue<Path> metaFiles = new PriorityQueue<>(comparator);
         try (DirectoryStream<Path> paths = Files.newDirectoryStream(pathToDirectory)) {
@@ -186,18 +181,17 @@ public class Storage {
         }
         while (!dataFiles.isEmpty() && !metaFiles.isEmpty()) {
             DaoFile daoFile = DaoFile.loadFile(dataFiles.poll(), metaFiles.poll(), false);
-            if (daoFile.maxEntrySize() > maxSize) {
-                maxSize = daoFile.maxEntrySize();
+            if (daoFile.maxEntrySize() > maxEntrySize) {
+                maxEntrySize = daoFile.maxEntrySize();
             }
             daoFiles.addFirst(daoFile);
         }
-        if (!daoFiles.isEmpty()) {
-            this.daoFilesCount = extractFileNumber(daoFiles.peekFirst().pathToFile()) + 1;
-        }
-        return maxSize;
+        int fileNumberingStart = daoFiles.isEmpty() ? 0 :
+                extractFileNumber(daoFiles.peek().pathToFile()) + 1;
+        return new StorageMeta(fileNumberingStart, maxEntrySize);
     }
 
-    private int extractFileNumber(Path path) {
+    private static int extractFileNumber(Path path) {
         String fileName = path.getFileName().toString();
         return Integer.parseInt(fileName.substring(DATA_FILE.length(), fileName.length() - FILE_EXTENSION.length()));
     }
@@ -216,6 +210,9 @@ public class Storage {
 
     long sizeOfEntry(BaseEntry<String> entry) {
         return getEntryIOManager().sizeOfEntry(entry);
+    }
+
+    private record StorageMeta(int fileNumberingStart, int maxEntrySize) {
     }
 
     private class FileIterator implements Iterator<BaseEntry<String>> {
