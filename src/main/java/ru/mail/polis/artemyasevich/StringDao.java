@@ -45,7 +45,6 @@ public class StringDao implements Dao<String, BaseEntry<String>> {
 
     @Override
     public Iterator<BaseEntry<String>> get(String from, String to) throws IOException {
-        //issue: close() is not forbidden to close files due iterators process
         MemoryState memory = this.memoryState;
         List<PeekIterator> iterators = new ArrayList<>(3);
         if (to != null && to.equals(from)) {
@@ -91,7 +90,6 @@ public class StringDao implements Dao<String, BaseEntry<String>> {
             long currentMemoryUsage = memoryState.memoryUsage.addAndGet(entrySizeDelta);
             if (currentMemoryUsage > config.flushThresholdBytes()) {
                 if (currentMemoryUsage > config.flushThresholdBytes() * 2) {
-                    executor.shutdown();
                     throw new IllegalStateException("Memory is full");
                 }
                 if (!autoFlushing.getAndSet(true)) {
@@ -109,21 +107,16 @@ public class StringDao implements Dao<String, BaseEntry<String>> {
         if (storage == null) {
             return;
         }
-        storageLock.lock();
-        try {
-            executor.submit(() -> {
-                storageLock.lock();
-                try {
-                    storage.compact();
-                } catch (IOException e) {
-                    throw new UncheckedIOException(e);
-                } finally {
-                    storageLock.unlock();
-                }
-            });
-        } finally {
-            storageLock.unlock();
-        }
+        executor.submit(() -> {
+            storageLock.lock();
+            try {
+                storage.compact();
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            } finally {
+                storageLock.unlock();
+            }
+        });
     }
 
     @Override
