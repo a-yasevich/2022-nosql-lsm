@@ -26,26 +26,25 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class StringDao implements Dao<String, BaseEntry<String>> {
     private final Config config;
-    private final Storage storage;
     private final ReadWriteLock upsertLock = new ReentrantReadWriteLock();
     private final Lock storageLock = new ReentrantLock();
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> new Thread(r, "StringDaoBg"));
     private final AtomicBoolean autoFlushing = new AtomicBoolean();
-    private MemoryState memoryState = MemoryState.newMemoryState();
+    private volatile State state;
 
     public StringDao(Config config) throws IOException {
         this.config = config;
-        this.storage = Storage.load(config);
+        this.state = State.newState(config);
     }
 
     public StringDao() {
         config = null;
-        storage = null;
+        state = State.newState();
     }
 
     @Override
     public Iterator<BaseEntry<String>> get(String from, String to) throws IOException {
-        MemoryState memory = this.memoryState;
+        State memory = this.state;
         List<PeekIterator> iterators = new ArrayList<>(3);
         if (to != null && to.equals(from)) {
             return Collections.emptyIterator();
@@ -56,22 +55,22 @@ public class StringDao implements Dao<String, BaseEntry<String>> {
         if (!memory.flushing.isEmpty()) {
             iterators.add(new PeekIterator(memoryIterator(from, to, memory.flushing), 1));
         }
-        if (storage != null) {
-            iterators.add(new PeekIterator(storage.iterate(from, to), 2));
+        if (state.storage != null) {
+            iterators.add(new PeekIterator(state.storage.iterate(from, to), 2));
         }
         return new MergeIterator(iterators);
     }
 
     @Override
     public BaseEntry<String> get(String key) throws IOException {
-        MemoryState state = this.memoryState;
+        State state = this.state;
         BaseEntry<String> entry;
         entry = state.memory.get(key);
         if (entry == null && !state.flushing.isEmpty()) {
             entry = state.flushing.get(key);
         }
-        if (entry == null && storage != null) {
-            entry = storage.get(key);
+        if (entry == null && state.storage != null) {
+            entry = state.storage.get(key);
         }
         return entry == null || entry.value() == null ? null : entry;
     }
@@ -79,15 +78,16 @@ public class StringDao implements Dao<String, BaseEntry<String>> {
     @Override
     public void upsert(BaseEntry<String> entry) {
         if (config == null || config.flushThresholdBytes() == 0) {
-            memoryState.memory.put(entry.key(), entry);
+            state.memory.put(entry.key(), entry);
             return;
         }
+        State state = this.state;
         upsertLock.readLock().lock();
         try {
-            BaseEntry<String> previous = memoryState.memory.get(entry.key());
-            long previousSize = previous == null ? 0 : storage.sizeOfEntry(previous);
-            long entrySizeDelta = storage.sizeOfEntry(entry) - previousSize;
-            long currentMemoryUsage = memoryState.memoryUsage.addAndGet(entrySizeDelta);
+            BaseEntry<String> previous = state.memory.get(entry.key());
+            long previousSize = previous == null ? 0 : state.storage.sizeOfEntry(previous);
+            long entrySizeDelta = state.storage.sizeOfEntry(entry) - previousSize;
+            long currentMemoryUsage = state.memoryUsage.addAndGet(entrySizeDelta);
             if (currentMemoryUsage > config.flushThresholdBytes()) {
                 if (currentMemoryUsage > config.flushThresholdBytes() * 2) {
                     throw new IllegalStateException("Memory is full");
@@ -96,7 +96,7 @@ public class StringDao implements Dao<String, BaseEntry<String>> {
                     executor.submit(this::flushMemory);
                 }
             }
-            memoryState.memory.put(entry.key(), entry);
+            state.memory.put(entry.key(), entry);
         } finally {
             upsertLock.readLock().unlock();
         }
@@ -104,13 +104,23 @@ public class StringDao implements Dao<String, BaseEntry<String>> {
 
     @Override
     public void compact() throws IOException {
-        if (storage == null) {
+        if (state.storage == null) {
             return;
         }
         executor.submit(() -> {
+            State state = this.state;
             storageLock.lock();
             try {
-                storage.compact();
+                if(state.storage.noNeedForCompact()){
+                    return;
+                }
+                Storage storage = state.storage.compact();
+                upsertLock.writeLock();
+                try {
+                    this.state = state.afterCompact(storage);
+                } finally {
+                    upsertLock.writeLock().unlock();
+                }
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             } finally {
@@ -126,7 +136,8 @@ public class StringDao implements Dao<String, BaseEntry<String>> {
 
     @Override
     public void close() throws IOException {
-        if (storage == null) {
+        State state = this.state;
+        if (state.storage == null) {
             return;
         }
         executor.shutdown();
@@ -140,28 +151,29 @@ public class StringDao implements Dao<String, BaseEntry<String>> {
             throw new IllegalStateException(e);
         }
         flushMemory();
-        storage.close();
+        state.storage.close();
     }
 
     private void flushMemory() {
-        if (storage == null) {
+        if (state.storage == null) {
             return;
         }
         storageLock.lock();
         try {
             upsertLock.writeLock().lock();
             try {
-                this.memoryState = memoryState.prepareForFlush();
+                this.state = state.prepareForFlush();
             } finally {
                 upsertLock.writeLock().unlock();
             }
-            if (memoryState.flushing.isEmpty()) {
+            if (this.state.flushing.isEmpty()) {
                 return;
             }
-            storage.flush(memoryState.flushing.values().iterator());
+            System.out.println(state);
+            Storage storage = state.storage.flush(this.state.flushing.values().iterator());
             upsertLock.writeLock().lock();
             try {
-                this.memoryState = memoryState.afterFlush();
+                this.state = state.afterFlush(storage);
             } finally {
                 upsertLock.writeLock().unlock();
             }
@@ -188,36 +200,49 @@ public class StringDao implements Dao<String, BaseEntry<String>> {
         return subMap.values().iterator();
     }
 
-    private static class MemoryState {
+    private static class State {
         final ConcurrentNavigableMap<String, BaseEntry<String>> memory;
         final ConcurrentNavigableMap<String, BaseEntry<String>> flushing;
+
+        final Storage storage;
         final AtomicLong memoryUsage;
 
-        private MemoryState(ConcurrentNavigableMap<String, BaseEntry<String>> memory,
-                            ConcurrentNavigableMap<String, BaseEntry<String>> flushing) {
+        private State(ConcurrentNavigableMap<String, BaseEntry<String>> memory,
+                      ConcurrentNavigableMap<String, BaseEntry<String>> flushing, Storage storage) {
             this.memory = memory;
             this.flushing = flushing;
+            this.storage = storage;
             this.memoryUsage = new AtomicLong();
         }
 
-        private MemoryState(ConcurrentNavigableMap<String, BaseEntry<String>> memory,
-                            ConcurrentNavigableMap<String, BaseEntry<String>> flushing,
-                            AtomicLong memoryUsage) {
+        private State(ConcurrentNavigableMap<String, BaseEntry<String>> memory,
+                      ConcurrentNavigableMap<String, BaseEntry<String>> flushing,
+                      Storage storage, AtomicLong memoryUsage) {
             this.memory = memory;
             this.flushing = flushing;
+            this.storage = storage;
             this.memoryUsage = memoryUsage;
         }
 
-        static MemoryState newMemoryState() {
-            return new MemoryState(new ConcurrentSkipListMap<>(), new ConcurrentSkipListMap<>());
+        static State newState(Config config) throws IOException {
+            Storage storage = Storage.load(config);
+            return new State(new ConcurrentSkipListMap<>(), new ConcurrentSkipListMap<>(), storage);
         }
 
-        MemoryState prepareForFlush() {
-            return new MemoryState(new ConcurrentSkipListMap<>(), memory, memoryUsage);
+        static State newState() {
+            return new State(new ConcurrentSkipListMap<>(), new ConcurrentSkipListMap<>(), null);
         }
 
-        MemoryState afterFlush() {
-            return new MemoryState(memory, new ConcurrentSkipListMap<>());
+        State prepareForFlush() {
+            return new State(new ConcurrentSkipListMap<>(), memory, storage, memoryUsage);
+        }
+
+        State afterFlush(Storage afterFlushStorage) {
+            return new State(memory, new ConcurrentSkipListMap<>(), afterFlushStorage);
+        }
+
+        State afterCompact(Storage afterCompactStorage) {
+            return new State(memory, flushing, afterCompactStorage, memoryUsage);
         }
 
     }
