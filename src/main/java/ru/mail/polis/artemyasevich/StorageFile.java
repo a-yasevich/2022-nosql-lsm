@@ -6,7 +6,7 @@ import java.io.RandomAccessFile;
 import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 
-public class DaoFile {
+public class StorageFile {
     private final long[] offsets;
     private final RandomAccessFile reader;
     private final long size;
@@ -16,7 +16,7 @@ public class DaoFile {
     private final Path pathToMeta;
     private final int maxEntrySize;
 
-    private DaoFile(Path pathToFile, Path pathToMeta, Meta meta, boolean isCompacted)
+    private StorageFile(Path pathToFile, Path pathToMeta, Meta meta, boolean isCompacted)
             throws FileNotFoundException {
         this.pathToFile = pathToFile;
         this.offsets = meta.offsets;
@@ -28,9 +28,9 @@ public class DaoFile {
         this.pathToMeta = pathToMeta;
     }
 
-    public static DaoFile loadFile(Path pathToFile, Path pathToMeta, boolean isCompacted) throws IOException {
+    public static StorageFile loadFile(Path pathToFile, Path pathToMeta, boolean isCompacted) throws IOException {
         Meta meta = processMetafile(pathToMeta);
-        return new DaoFile(pathToFile, pathToMeta, meta, isCompacted);
+        return new StorageFile(pathToFile, pathToMeta, meta, isCompacted);
     }
 
 

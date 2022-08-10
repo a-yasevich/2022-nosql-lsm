@@ -33,12 +33,12 @@ public class Storage {
     private static final OpenOption[] writeOptions = {StandardOpenOption.CREATE, StandardOpenOption.WRITE};
 
     private final Map<Thread, EntryIOManager> IOManagers = Collections.synchronizedMap(new WeakHashMap<>());
-    private final Deque<DaoFile> daoFiles;
+    private final Deque<StorageFile> daoFiles;
     private final Path pathToDirectory;
     private final int initialBufferSize;
     private final int fileNumberingStart;
 
-    private Storage(Deque<DaoFile> daoFiles, Path pathToDirectory, int initialBufferSize, int fileNumberingStart) {
+    private Storage(Deque<StorageFile> daoFiles, Path pathToDirectory, int initialBufferSize, int fileNumberingStart) {
         this.daoFiles = daoFiles;
         this.pathToDirectory = pathToDirectory;
         this.initialBufferSize = initialBufferSize;
@@ -46,7 +46,7 @@ public class Storage {
     }
 
     static Storage load(Config config) throws IOException {
-        Deque<DaoFile> daoFiles = new ArrayDeque<>();
+        Deque<StorageFile> daoFiles = new ArrayDeque<>();
         StorageMeta meta = initFiles(daoFiles, config.basePath());
         int buffersSize = Math.max(meta.maxEntrySize, DEFAULT_BUFFER_SIZE);
         return new Storage(daoFiles, config.basePath(), buffersSize, meta.fileNumberingStart);
@@ -57,7 +57,7 @@ public class Storage {
         if (key.length() > entryReader.maxPossibleKeyLength()) {
             return null;
         }
-        for (DaoFile daoFile : daoFiles) {
+        for (StorageFile daoFile : daoFiles) {
             int entryIndex = entryReader.getEntryIndex(key, daoFile);
             if (entryIndex > daoFile.getLastIndex()) {
                 continue;
@@ -76,7 +76,7 @@ public class Storage {
     Iterator<BaseEntry<String>> iterate(String from, String to) throws IOException {
         List<PeekIterator> peekIterators = new ArrayList<>(daoFiles.size());
         int i = 0;
-        for (DaoFile daoFile : daoFiles) {
+        for (StorageFile daoFile : daoFiles) {
             peekIterators.add(new PeekIterator(new FileIterator(from, to, daoFile), i));
             i++;
             if (daoFile.isCompacted()) {
@@ -99,7 +99,7 @@ public class Storage {
 
     void close() throws IOException {
         boolean compactedEncountered = false;
-        for (DaoFile daoFile : daoFiles) {
+        for (StorageFile daoFile : daoFiles) {
             daoFile.close();
             if (compactedEncountered) {
                 Files.delete(daoFile.pathToFile());
@@ -120,7 +120,7 @@ public class Storage {
         Path pathToData = pathToData(newFileNumber());
         Path pathToMeta = pathToMeta(newFileNumber());
         saveData(iterator, pathToData, pathToMeta);
-        daoFiles.addFirst(DaoFile.loadFile(pathToData, pathToMeta, fileIsCompacted));
+        daoFiles.addFirst(StorageFile.loadFile(pathToData, pathToMeta, fileIsCompacted));
     }
 
     private void saveData(Iterator<BaseEntry<String>> dataIterator,
@@ -158,7 +158,7 @@ public class Storage {
         return IOManagers.computeIfAbsent(Thread.currentThread(), thread -> new EntryIOManager(initialBufferSize));
     }
 
-    private static StorageMeta initFiles(Deque<DaoFile> daoFiles, Path pathToDirectory) throws IOException {
+    private static StorageMeta initFiles(Deque<StorageFile> daoFiles, Path pathToDirectory) throws IOException {
         int maxEntrySize = 0;
         Comparator<Path> comparator = Comparator.comparingInt(Storage::extractFileNumber);
         Queue<Path> dataFiles = new PriorityQueue<>(comparator);
@@ -180,7 +180,7 @@ public class Storage {
             Files.delete(metaFiles.poll());
         }
         while (!dataFiles.isEmpty() && !metaFiles.isEmpty()) {
-            DaoFile daoFile = DaoFile.loadFile(dataFiles.poll(), metaFiles.poll(), false);
+            StorageFile daoFile = StorageFile.loadFile(dataFiles.poll(), metaFiles.poll(), false);
             if (daoFile.maxEntrySize() > maxEntrySize) {
                 maxEntrySize = daoFile.maxEntrySize();
             }
@@ -217,12 +217,12 @@ public class Storage {
 
     private class FileIterator implements Iterator<BaseEntry<String>> {
         private final EntryIOManager entryReader;
-        private final DaoFile daoFile;
+        private final StorageFile daoFile;
         private final String to;
         private int entryToRead;
         private BaseEntry<String> next;
 
-        public FileIterator(String from, String to, DaoFile daoFile) throws IOException {
+        public FileIterator(String from, String to, StorageFile daoFile) throws IOException {
             this.daoFile = daoFile;
             this.to = to;
             this.entryReader = getEntryIOManager();
