@@ -35,21 +35,19 @@ public class Storage {
     private final Deque<StorageFile> storageFiles; //immutable
     private final Path pathToDirectory;
     private final int maxEntrySize;
-    private final int fileNumberingStart;
 
-    private Storage(Deque<StorageFile> storageFiles, Map<Thread, EntryIOManager> ioManagers, Path pathToDirectory, int maxEntrySize, int fileNumberingStart) {
+    private Storage(Deque<StorageFile> storageFiles, Map<Thread, EntryIOManager> ioManagers, Path pathToDirectory, int maxEntrySize) {
         this.storageFiles = storageFiles;
         this.ioManager = ioManagers;
         this.pathToDirectory = pathToDirectory;
         this.maxEntrySize = maxEntrySize;
-        this.fileNumberingStart = fileNumberingStart;
     }
 
     static Storage load(Config config) throws IOException {
         Deque<StorageFile> storageFiles = new ArrayDeque<>();
-        StorageMeta meta = initFiles(storageFiles, config.basePath());
-        int buffersSize = Math.max(meta.maxEntrySize, DEFAULT_BUFFER_SIZE);
-        return new Storage(storageFiles, Collections.synchronizedMap(new WeakHashMap<>()), config.basePath(), buffersSize, meta.fileNumberingStart);
+        int maxEntrySize = initFiles(storageFiles, config.basePath());
+        int buffersSize = Math.max(maxEntrySize, DEFAULT_BUFFER_SIZE);
+        return new Storage(storageFiles, Collections.synchronizedMap(new WeakHashMap<>()), config.basePath(), buffersSize);
     }
 
     private Storage newState(Deque<StorageFile> files, StorageFile newFile) {
@@ -62,7 +60,7 @@ public class Storage {
             ioManagers = Collections.synchronizedMap(new WeakHashMap<>());
             maxEntrySize = newFile.maxEntrySize();
         }
-        return new Storage(files, ioManagers, pathToDirectory, maxEntrySize, fileNumberingStart);
+        return new Storage(files, ioManagers, pathToDirectory, maxEntrySize);
     }
 
     BaseEntry<String> get(String key) throws IOException {
@@ -128,7 +126,7 @@ public class Storage {
     }
 
     private int newFileNumber() {
-        return fileNumberingStart + storageFiles.size();
+        return storageFiles.isEmpty() ? 0 : extractFileNumber(storageFiles.peek().pathToFile()) + 1;
     }
 
     private StorageFile saveFile(Iterator<BaseEntry<String>> iterator, boolean fileIsCompacted) throws IOException {
@@ -173,7 +171,7 @@ public class Storage {
         return ioManager.computeIfAbsent(Thread.currentThread(), thread -> new EntryIOManager(maxEntrySize));
     }
 
-    private static StorageMeta initFiles(Deque<StorageFile> storageFiles, Path pathToDirectory) throws IOException {
+    private static int initFiles(Deque<StorageFile> storageFiles, Path pathToDirectory) throws IOException {
         int maxEntrySize = 0;
         Comparator<Path> comparator = Comparator.comparingInt(Storage::extractFileNumber);
         Queue<Path> dataFiles = new PriorityQueue<>(comparator);
@@ -201,9 +199,7 @@ public class Storage {
             }
             storageFiles.addFirst(storageFile);
         }
-        int fileNumberingStart = storageFiles.isEmpty() ? 0 :
-                extractFileNumber(storageFiles.peek().pathToFile()) + 1;
-        return new StorageMeta(fileNumberingStart, maxEntrySize);
+        return maxEntrySize;
     }
 
     private static int extractFileNumber(Path path) {
@@ -225,9 +221,6 @@ public class Storage {
 
     long sizeOfEntry(BaseEntry<String> entry) {
         return getEntryIOManager().sizeOfEntry(entry);
-    }
-
-    private record StorageMeta(int fileNumberingStart, int maxEntrySize) {
     }
 
 }
